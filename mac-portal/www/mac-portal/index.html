@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Connect</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+  <h1>Connect to WiFi</h1>
+
+  <section id="step-mac" class="step">
+    <p class="hint">Enter the MAC address of the device that's already authorized on the network you want to join.</p>
+    <form id="mac-form">
+      <label for="mac-input">MAC address</label>
+      <input id="mac-input" name="mac" type="text" placeholder="aa:bb:cc:dd:ee:ff" autocomplete="off" required>
+      <p id="mac-error" class="error" hidden></p>
+      <button type="submit">Continue</button>
+    </form>
+  </section>
+
+  <section id="step-scan" class="step" hidden>
+    <p class="hint">Choose a network.</p>
+    <button id="rescan-btn" type="button">Scan again</button>
+    <p id="scan-status"></p>
+    <ul id="network-list"></ul>
+  </section>
+
+  <section id="step-password" class="step" hidden>
+    <p class="hint">"<span id="password-ssid"></span>" needs a password.</p>
+    <form id="password-form">
+      <label for="password-input">Password</label>
+      <input id="password-input" name="password" type="password" minlength="8" maxlength="63" required>
+      <p id="password-error" class="error" hidden></p>
+      <button type="submit">Connect</button>
+      <button id="password-back-btn" type="button" class="secondary">Back</button>
+    </form>
+  </section>
+
+  <section id="step-connecting" class="step" hidden>
+    <p class="hint" id="connecting-text">Connecting&hellip;</p>
+    <div id="spinner" class="spinner"></div>
+    <p id="connect-result"></p>
+    <button id="start-over-btn" type="button" hidden>Start over</button>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

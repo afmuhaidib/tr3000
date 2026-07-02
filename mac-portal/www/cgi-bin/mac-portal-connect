@@ -1,0 +1,136 @@
+#!/bin/sh
+# mac-portal-connect
+# POST (application/x-www-form-urlencoded): mac, ssid, enc, key
+#   enc must be one of: none | psk2 | sae-mixed | sae
+#   key is required unless enc=none, length 8-63
+#
+# Validates everything server-side, writes it into the pre-provisioned
+# wireless.wisp_sta uci section (see setup/mac-portal-setup.sh) and brings
+# only the affected radio back up.
+#
+# Security invariant: every value is passed to uci/ubus as a plain "$VAR"
+# argv element. Never eval, never build a string and hand it to `sh -c`.
+# Quoted variable expansion in POSIX sh is not re-parsed for shell
+# metacharacters, so this is injection-safe as long as that rule holds.
+
+CONF=/etc/mac-portal.conf
+[ -r "$CONF" ] && . "$CONF"
+RADIO="${RADIO:-radio1}"
+STA_SECTION="${STA_SECTION:-wisp_sta}"
+
+fail() {
+    # $1=http status code+text, $2=field name, $3=message
+    echo "Status: $1"
+    echo "Content-Type: application/json"
+    echo
+    printf '{"result":"error","field":"%s","message":"%s"}' "$2" "$3"
+    exit 0
+}
+
+urldecode() {
+    # Decode one application/x-www-form-urlencoded value (arg $1) to stdout.
+    # Done in awk rather than `printf '%b'` with \xHH escapes: \xHH is a
+    # bash/GNU extension, not POSIX, and is NOT supported by plain POSIX
+    # sh/dash (confirmed) or reliably by busybox ash's printf — relying on
+    # it would silently corrupt any value containing a percent-escape,
+    # including the MAC address itself (colons get sent as %3A).
+    printf '%s' "$1" | awk '
+        BEGIN {
+            h["0"]=0;h["1"]=1;h["2"]=2;h["3"]=3;h["4"]=4;h["5"]=5;h["6"]=6;h["7"]=7;
+            h["8"]=8;h["9"]=9;h["a"]=10;h["b"]=11;h["c"]=12;h["d"]=13;h["e"]=14;h["f"]=15;
+            h["A"]=10;h["B"]=11;h["C"]=12;h["D"]=13;h["E"]=14;h["F"]=15;
+        }
+        {
+            s = $0; out = ""; n = length(s); i = 1
+            while (i <= n) {
+                c = substr(s, i, 1)
+                if (c == "+") { out = out " "; i++ }
+                else if (c == "%" && i+2 <= n && (substr(s,i+1,1) in h) && (substr(s,i+2,1) in h)) {
+                    v = h[substr(s,i+1,1)]*16 + h[substr(s,i+2,1)]
+                    out = out sprintf("%c", v); i += 3
+                } else { out = out c; i++ }
+            }
+            printf "%s", out
+        }'
+}
+
+[ "$REQUEST_METHOD" = "POST" ] || fail "405 Method Not Allowed" method "use POST"
+
+CONTENT_LENGTH="${CONTENT_LENGTH:-0}"
+case "$CONTENT_LENGTH" in
+    ''|*[!0-9]*) fail "400 Bad Request" body "invalid Content-Length" ;;
+esac
+[ "$CONTENT_LENGTH" -gt 0 ] && [ "$CONTENT_LENGTH" -le 4096 ] || fail "400 Bad Request" body "missing or oversized body"
+
+BODY="$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)"
+
+OLDIFS="$IFS"
+IFS='&'
+set -- $BODY
+IFS="$OLDIFS"
+
+MAC_RAW=""; SSID_RAW=""; ENC_RAW=""; KEY_RAW=""
+for pair in "$@"; do
+    k="${pair%%=*}"
+    v="${pair#*=}"
+    case "$k" in
+        mac)  MAC_RAW="$v" ;;
+        ssid) SSID_RAW="$v" ;;
+        enc)  ENC_RAW="$v" ;;
+        key)  KEY_RAW="$v" ;;
+    esac
+done
+
+MAC="$(urldecode "$MAC_RAW" | tr 'A-F' 'a-f')"
+SSID="$(urldecode "$SSID_RAW")"
+ENC="$(urldecode "$ENC_RAW")"
+KEY="$(urldecode "$KEY_RAW")"
+
+# --- validate mac ---------------------------------------------------------
+echo "$MAC" | grep -Eq '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$' \
+    || fail "400 Bad Request" mac "must look like aa:bb:cc:dd:ee:ff"
+
+FIRST_OCTET="${MAC%%:*}"
+SECOND_CHAR="${FIRST_OCTET#?}"
+case "$SECOND_CHAR" in
+    1|3|5|7|9|b|d|f) fail "400 Bad Request" mac "must not be a multicast address" ;;
+esac
+
+# --- validate ssid ---------------------------------------------------------
+SSID_LEN=${#SSID}
+[ "$SSID_LEN" -ge 1 ] && [ "$SSID_LEN" -le 32 ] || fail "400 Bad Request" ssid "must be 1-32 characters"
+
+# --- validate enc -----------------------------------------------------------
+case "$ENC" in
+    none|psk2|sae-mixed|sae) : ;;
+    *) fail "400 Bad Request" enc "must be one of none, psk2, sae-mixed, sae" ;;
+esac
+
+# --- validate key (only required for secured networks) ----------------------
+if [ "$ENC" != "none" ]; then
+    KEY_LEN=${#KEY}
+    [ "$KEY_LEN" -ge 8 ] && [ "$KEY_LEN" -le 63 ] || fail "400 Bad Request" key "must be 8-63 characters"
+fi
+
+# --- apply -------------------------------------------------------------------
+uci set wireless.$STA_SECTION.macaddr="$MAC"
+uci set wireless.$STA_SECTION.ssid="$SSID"
+uci set wireless.$STA_SECTION.encryption="$ENC"
+if [ "$ENC" != "none" ]; then
+    uci set wireless.$STA_SECTION.key="$KEY"
+else
+    uci -q delete wireless.$STA_SECTION.key
+fi
+
+if ! uci commit wireless; then
+    fail "500 Internal Server Error" config "failed to save configuration"
+fi
+
+if ! ubus call network.wireless up "{\"device\":\"$RADIO\"}" >/dev/null 2>&1; then
+    fail "500 Internal Server Error" radio "failed to bring radio up"
+fi
+
+echo "Status: 200 OK"
+echo "Content-Type: application/json"
+echo
+printf '{"result":"ok","radio":"%s"}' "$RADIO"

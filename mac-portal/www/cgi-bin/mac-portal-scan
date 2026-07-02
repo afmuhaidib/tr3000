@@ -1,0 +1,22 @@
+#!/bin/sh
+# mac-portal-scan
+# GET: trigger a WiFi scan on the configured client radio and return the
+# raw iwinfo ubus JSON straight through (no parsing needed - the frontend
+# reads .results[].encryption.enabled / .authentication directly).
+
+CONF=/etc/mac-portal.conf
+[ -r "$CONF" ] && . "$CONF"
+IFNAME="${IFNAME:-wispsta}"
+
+RESULT="$(ubus -S call iwinfo scan "{\"device\":\"$IFNAME\"}" 2>/dev/null)"
+
+if [ -z "$RESULT" ]; then
+    echo "Status: 500 Internal Server Error"
+    echo "Content-Type: application/json"
+    echo
+    printf '{"error":"scan_failed","ifname":"%s"}' "$IFNAME"
+else
+    echo "Content-Type: application/json"
+    echo
+    printf '%s' "$RESULT"
+fi

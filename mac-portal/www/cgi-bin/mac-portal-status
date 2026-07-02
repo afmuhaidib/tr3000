@@ -1,0 +1,18 @@
+#!/bin/sh
+# mac-portal-status
+# GET: passthrough of the wwan interface's ubus status, for the frontend to
+# poll after a connect attempt (watches .up and .["ipv4-address"]).
+
+CONF=/etc/mac-portal.conf
+[ -r "$CONF" ] && . "$CONF"
+WWAN_IFACE="${WWAN_IFACE:-wwan}"
+
+RESULT="$(ubus -S call "network.interface.$WWAN_IFACE" status 2>/dev/null)"
+
+echo "Content-Type: application/json"
+echo
+if [ -z "$RESULT" ]; then
+    printf '{"up":false,"error":"status_unavailable"}'
+else
+    printf '%s' "$RESULT"
+fi
